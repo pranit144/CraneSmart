@@ -1,0 +1,243 @@
+Below is a complete Arduino-style sketch for the NodeMCU (ESP8266) that:
+
+1. Connects to your Wi-Fi network.
+2. Reads a DHT11 temperature/humidity sensor.
+3. Reads a PIR motion sensor.
+4. (Optionally) Posts the readings via HTTP POST to a REST endpoint.
+
+You can adapt the HTTP section (URL/JSON payload) to fit whatever backend your CraneSmart system uses. If you only need to print to Serial, simply comment out or remove the HTTP part.
+
+---
+
+```cpp
+/*
+  Filename: CraneSmart_SensorLogger.ino
+
+  Purpose:
+    • Connect NodeMCU (ESP8266) to Wi-Fi.
+    • Read temperature & humidity from a DHT11.
+    • Read motion state from a PIR sensor.
+    • Print results to Serial, and optionally send via HTTP POST.
+
+  Hardware:
+    • NodeMCU (ESP8266)
+    • DHT11 (or DHT22) connected to D4 (GPIO2)
+    • PIR motion sensor connected to D5 (GPIO14)
+    • (Optional) Backend server to receive JSON via HTTP.
+
+  Wiring:
+    • DHT11:
+        VCC → 3V3
+        GND → GND
+        DATA → D4 (GPIO2)
+        (10K pull-up resistor between DATA and 3V3 if your module doesn’t have one built in)
+    • PIR:
+        VCC → 5V (or 3V3 if module is 3.3V-compatible)
+        GND → GND
+        OUT → D5 (GPIO14)
+
+  Libraries needed:
+    • ESP8266WiFi
+    • ESP8266HTTPClient
+    • DHT sensor library by Adafruit
+      (Install via Library Manager: “DHT sensor library” by Adafruit)
+
+  Usage:
+    • Fill in your SSID/PASSWORD.
+    • (Optional) Adjust serverURL if you want to POST data.
+    • Upload to NodeMCU using Arduino IDE or PlatformIO.
+*/
+
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <DHT.h>
+
+// —— CONFIGURATION ——
+
+// 1) Wi-Fi credentials
+const char* ssid     = "YOUR_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// 2) DHT sensor settings
+#define DHTPIN        D4      // NodeMCU D4 (GPIO2)
+#define DHTTYPE       DHT11   // 'DHT11' or 'DHT22'
+DHT dht(DHTPIN, DHTTYPE);
+
+// 3) PIR motion sensor pin
+const uint8_t PIR_PIN = D5;   // NodeMCU D5 (GPIO14)
+
+// 4) (Optional) HTTP server endpoint to POST JSON:
+const char* serverURL = "http://your-server.com/api/sensor-data";
+
+
+// —— SETUP —— 
+void setup() {
+  Serial.begin(115200);
+  delay(10);
+  Serial.println();
+  Serial.println("🟢 CraneSmart Sensor Logger Starting...");
+
+  // Initialize DHT sensor
+  dht.begin();
+  Serial.println("• DHT initialized on pin D4 (GPIO2)");
+
+  // Initialize PIR pin
+  pinMode(PIR_PIN, INPUT);
+  Serial.println("• PIR initialized on pin D5 (GPIO14)");
+
+  // Connect to Wi-Fi
+  Serial.printf("⏳ Connecting to Wi-Fi SSID: %s\n", ssid);
+  WiFi.begin(ssid, password);
+
+  uint8_t attempts = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+    if (attempts >= 30) { 
+      Serial.println("\n❌ Failed to connect to Wi-Fi. Check credentials.");
+      break;
+    }
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ Wi-Fi connected!");
+    Serial.print("• IP address: ");
+    Serial.println(WiFi.localIP());
+  }
+}
+
+// —— MAIN LOOP —— 
+void loop() {
+  // 1) Read DHT11
+  float h = dht.readHumidity();
+  float t = dht.readTemperature(); // Celsius
+  // If you want Fahrenheit: dht.readTemperature(true);
+
+  // Check if any reads failed
+  if (isnan(h) || isnan(t)) {
+    Serial.println("⚠️ Failed to read from DHT sensor!");
+  } else {
+    Serial.printf("🌡️ Temperature: %.1f °C, 💧 Humidity: %.1f %%\n", t, h);
+  }
+
+  // 2) Read PIR motion sensor
+  int motionState = digitalRead(PIR_PIN);
+  if (motionState == HIGH) {
+    Serial.println("🔔 Motion detected!");
+  } else {
+    Serial.println("…No motion");
+  }
+
+  // 3) (Optional) Send data via HTTP POST
+  if (WiFi.status() == WL_CONNECTED) {
+    sendSensorData(t, h, motionState);
+  } else {
+    Serial.println("⚠️ Wi-Fi not connected. Skipping HTTP POST.");
+  }
+
+  // 4) Wait before next reading
+  delay(10000); // e.g., 10 seconds
+}
+
+
+// —— HELPER FUNCTION: Send JSON via HTTP POST —— 
+void sendSensorData(float temperature, float humidity, int motion) {
+  HTTPClient http;
+
+  // Prepare JSON payload
+  String payload = "{";
+  payload += "\"temperature\": " + String(temperature, 1) + ",";
+  payload += "\"humidity\": " + String(humidity, 1) + ",";
+  payload += "\"motion\": " + String(motion);
+  payload += "}";
+
+  http.begin(serverURL);            // Specify destination
+  http.addHeader("Content-Type", "application/json");
+
+  int httpResponseCode = http.POST(payload);
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.printf("📤 HTTP %d Response: %s\n", httpResponseCode, response.c_str());
+  } else {
+    Serial.printf("❌ HTTP POST failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
+  }
+  http.end(); // Free resources
+}
+```
+
+### Explanation & Customization
+
+1. **Libraries & Pins**
+
+   * `ESP8266WiFi.h` and `ESP8266HTTPClient.h` let the NodeMCU connect to Wi-Fi and send HTTP requests.
+   * `DHT.h` (Adafruit’s library) handles reading temperature/humidity from the DHT11 (or DHT22).
+   * We wired the DHT data line to **D4 (GPIO2)** and the PIR output to **D5 (GPIO14)**.
+
+2. **Wi-Fi Connection**
+
+   * Fill in `ssid` and `password`.
+   * The sketch attempts to connect for up to \~15 seconds (30×500 ms loops).
+   * Once connected, it prints the local IP to Serial.
+
+3. **Reading Sensors**
+
+   * **DHT**: `dht.readTemperature()` and `dht.readHumidity()` return floats.
+     If they return `NaN`, the read failed.
+   * **PIR**: A simple digital read (`HIGH` means motion detected).
+
+4. **HTTP POST (Optional)**
+
+   * If `WiFi.status() == WL_CONNECTED`, the code builds a small JSON payload:
+
+     ```json
+     {
+       "temperature": 23.5,
+       "humidity": 45.2,
+       "motion": 1
+     }
+     ```
+   * It POSTS to the URL in `serverURL`.
+   * Adjust `serverURL` to point at your backend API.
+   * You can modify headers, add authentication tokens, or change the payload shape as needed.
+
+5. **Timing**
+
+   * After reading & posting, the code waits `delay(10000)` (10 seconds) before looping. Adjust as desired.
+
+---
+
+### How to Install & Upload
+
+1. **Install Arduino IDE** (or use PlatformIO).
+2. **Add ESP8266 Board Support**
+
+   * In Arduino IDE:
+
+     1. **File → Preferences** → in “Additional Boards Manager URLs”, paste:
+
+        ```
+        http://arduino.esp8266.com/stable/package_esp8266com_index.json
+        ```
+     2. **Tools → Board → Boards Manager…** → search “esp8266” → Install “esp8266 by ESP8266 Community”.
+3. **Install the DHT Library**
+
+   * **Sketch → Include Library → Manage Libraries…** → search “DHT sensor library” → install the one by Adafruit.
+4. **Select Board & Port**
+
+   * **Tools → Board → NodeMCU 1.0 (ESP-12E Module)**
+   * **Tools → Port → your NodeMCU’s COM port**
+5. **Copy & Paste** the above sketch into a new Arduino window, update your Wi-Fi credentials (and optionally `serverURL`), then click **Upload**.
+
+   After uploading, open **Serial Monitor** (baud 115200) to see connection logs and sensor readings.
+
+---
+
+### Integrating with CraneSmart
+
+* If your CraneSmart backend expects sensor data at a particular endpoint (e.g., `/api/telemetry`), adjust `serverURL`.
+* On the backend side, parse the JSON fields `"temperature"`, `"humidity"`, and `"motion"`. Save into your database or feed into your predictive‐maintenance pipeline.
+* You can add more sensors (vibration, load cell, etc.) by wiring them to available GPIOs/A0 and extending the code to read and POST additional fields.
+
+---
+
+With this sketch, your NodeMCU will continuously monitor temperature and motion, printing values to Serial and pushing JSON payloads to your server. Feel free to expand on it—add error‐checks, OTA updates, or MQTT instead of HTTP if that’s your preferred protocol.
